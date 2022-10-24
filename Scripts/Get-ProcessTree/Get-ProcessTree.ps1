@@ -6,18 +6,22 @@
 
     Shows the process tree using data from the given CSV
 .AUTHOR
-	DaFuqs @ https://github.com/DaFuqs
+	Dominik Schmidt @ https://github.com/DaFuqs
 .VERSION
-    1.0
+    1.1
+.VERSION_HISTORY
+    1.1: - Double Clicking an Entry brings up a property view
+         - Suspicious Entries get colored red and list their suspicion hits in their tooltip + properties view
+    1.0: Public release
 #>
 
 [CmdletBinding()]
 
 Param (
     # Path to the input CSV file
-    [Parameter(Mandatory=$true, ValueFromPipeline=$true)]
+    [Parameter(Mandatory=$false, ValueFromPipeline=$true)]
 	[ValidateScript({try { Test-Path -Path $_ -PathType Leaf } catch { throw "No file at `"$_`"" }})] # test if there is a file at given location
-    [string] $CSVPath,
+    [string] $CSVPath = "E:\Downloads\MemProc\proc.csv",
     
     # Process names of script interpreters
     # Will be matched 1:1
@@ -233,6 +237,59 @@ function Is-Match($Text, $SearchText, $SearchMode) {
         }
     }
     $false
+}
+
+function Show-EntryWindow($entry) {
+    # create form for displaying the folder tree
+    $entryForm = New-Object System.Windows.Forms.Form
+    $entryForm.Text = $entry."Process Name" + ": " + $entry.PID + " - Properties"
+    $entryForm.Size = New-Object System.Drawing.Size(500, 372)
+    $entryForm.Icon = $icon
+
+    $alternateCellStyle = New-Object System.Windows.Forms.DataGridViewCellStyle
+    $alternateCellStyle.BackColor = [System.Drawing.SystemColors]::ControlLight
+    
+    $dataGridView = New-Object System.Windows.Forms.DataGridView
+    $dataGridView.Name = "EntryPropertiesGridView"
+    $dataGridView.AllowUserToAddRows = $false
+    $dataGridView.AllowUserToDeleteRows = $false
+    $dataGridView.AllowUserToOrderColumns = $false
+    $dataGridView.AllowUserToResizeRows = $false
+    $dataGridView.ColumnHeadersHeightSizeMode = [System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode]::DisableResizing
+    $dataGridView.RowHeadersVisible = $false
+    $dataGridView.ReadOnly = $true
+    $dataGridView.ColumnCount = 2
+    $dataGridView.Columns[0].Name = "Property"
+    $dataGridView.Columns[0].AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::AllCells
+    $dataGridView.Columns[1].Name = "Value"
+    $dataGridView.Columns[1].AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::Fill
+    $dataGridView.AlternatingRowsDefaultCellStyle = $alternateCellStyle
+    $dataGridView.SelectionMode = [System.Windows.Forms.DataGridViewSelectionMode]::FullRowSelect
+    $dataGridView.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+    foreach($property in $entry.psobject.Properties) {
+        $dataGridView.Rows.Add($property.Name + ":", $property.Value)
+    }
+
+    $entryForm.BackColor = [System.Drawing.SystemColors]::ControlLight
+
+    $entryForm.Controls.Add($dataGridView)
+    $entryForm.Show()
+}
+
+function Note-Suspicious($Node, $Description) {
+    if($Node.Tag.Suspicious) {
+        $Node.Tag.Suspicious = $Node.Tag.Suspicious + ", " + $Description
+    } else {
+        $Node.Tag.Suspicious = $Description
+    }
+    $Node.ForeColor = [System.Drawing.Color]::Red
+    $Node.ToolTipText = ($Node.Tag | Out-String).Trim() -replace " *:", ":"
+}
+
+function Set-Suspicious($Node, $ParentID, $Description, $ShortId) {
+    Note-Suspicious -Node $node -Description $Description
+    New-Node -ID $($Node.Tag.PID + "_" + $ShortId) -Text $process."Call Chain" -Tooltip $node.ToolTipText -Parent $ParentID -Tag $Node.Tag
 }
 
 ####################################
@@ -544,6 +601,10 @@ function Fill-GUIData {
             }
         }
     })
+    
+    $TreeView.Add_NodeMouseDoubleClick({
+        Show-EntryWindow($_.Node.Tag)
+    })
     $nodesMap = @{}
     
     $TotalProcesses = ($csvEntries).Count
@@ -586,6 +647,9 @@ function Fill-GUIData {
 
     # create nodes, but not attach them yet. It will make parent search possible.
     foreach ($csvEntry in $csvEntries) {
+        # Add a "Suspicious" attribute
+        Add-Member -InputObject $csvEntry -MemberType NoteProperty -Name "Suspicious" -Value ""
+
         $newNode = New-Object System.Windows.Forms.TreeNode
         if($VisualPIDs) {
             $newNode.Text = $(if($csvEntry.PID) { $csvEntry.PID } else { "???" }) + ": " + $(if($csvEntry."Process Name") { $csvEntry."Process Name" } else { "<unknown>" })
@@ -643,14 +707,50 @@ function Fill-GUIData {
         }
     
         # attach this node to the element with matching PID => PPID
-        [void] $nodesMap[$currProcess.PPID].Nodes.Add($currNode)
+        $cyclicalPIDRelationship = $false
+        $cyclicalParent = $false
+        $PIDTreeList = New-Object System.Collections.ArrayList
+
+        $checkProcess = $currProcess
+        $checkNode = $currNode
+        $orphanNode = $nodesMap[$orphanID]
+        Write-Verbose "Starting with $($checkProcess.PID)"
+        while($checkProcess) {
+            if($checkNode.Parent -eq $orphanNode) {
+                Write-Verbose ".......PID $($checkProcess.PID) is already known having a cyclical PID relationship. Aborting."
+                $cyclicalParent = $true
+                break
+            }
+            [void] $PIDTreeList.Add($checkProcess.PID)
+            $checkNode = $nodesMap[$checkProcess.PPID]
+            $checkProcess = $checkNode.Tag
+            Write-Verbose "...checking $($checkProcess.PID) (Tree: $($PIDTreeList))"
+            if($PIDTreeList.Contains($checkProcess.PID)) {
+                Write-Verbose ......"Cyclical Relationship found: PID $($checkProcess.PID)"
+                $cyclicalPIDRelationship = $true
+                break
+            }
+        }
+
+        if($cyclicalPIDRelationship) {
+            if(-not $orphanNode.Nodes.Contains($checkNode)) {
+                Note-Suspicious -Node $checkNode -Description "Cyclical PID Relationship (Process with PID $($checkProcess.PPID) is a child process of this)"
+                [void] $orphanNode.Nodes.Add($checkNode)
+            }
+        }
+        if($cyclicalParent -and $checkProcess -eq $currProcess) {
+            Write-Verbose "NOT ADDING $($currProcess.PID) to node with PID $($nodesMap[$currProcess.PPID].Tag.PID) - currently already: $($nodesMap[$currProcess.PPID].Nodes.Tag.PID)"
+        } else {
+            Write-Verbose "Adding $($currProcess.PID) to node with PID $($nodesMap[$currProcess.PPID].Tag.PID) - currently already: $($nodesMap[$currProcess.PPID].Nodes.Tag.PID)"
+            [void] $nodesMap[$currProcess.PPID].Nodes.Add($currNode)
+        }
     }
 
     # one last iteration: add a full path property to all nodes
     foreach ($node in @($nodesMap.Values)) {
-        # Add a "Call Chain" attribute
         $process = $node.Tag
-        if($process -ne $null) {
+        if($process -ne $null) {        
+            # Add a "Call Chain" attribute
             $processTree = $node.Text
             $currentNode = $node
             while($currentNode.Parent -ne $null -and $currentNode.Parent.Tag -ne $null) {
@@ -673,24 +773,24 @@ function Fill-GUIData {
         if($process.'Process Name' -ne $null) {
             # script interpreters
             if ($process.'Process Name' -in $scriptInterpreters) {
-                New-Node -ID $($process.PID + "_in") -Text $process."Call Chain" -Tooltip $node.ToolTipText -Parent $scriptInterpretersID -Tag $node.Tag
+                Set-Suspicious -Node $node -ParentID $scriptInterpretersID -Description "Script Interpreter" -ShortId "in"
             }
 
             # lateral movement programs
             if($process.'Process Name' -in $LateralMovementPrograms) {
-                New-Node -ID $($process.PID + "_si") -Text $process."Call Chain" -Tooltip $node.ToolTipText -Parent $lateralMovementProgramsID -Tag $node.Tag
+                Set-Suspicious -Node $node -ParentID $lateralMovementProgramsID -Description "Lateral Movement Program" -ShortId "lm"
             }
 
             # suspicious programs
             if($process.'Process Name' -in $SuspiciousPrograms) {
-                New-Node -ID $($process.PID + "_sp") -Text $process."Call Chain" -Tooltip $node.ToolTipText -Parent $suspiciousProgramsID -Tag $node.Tag
+                Set-Suspicious -Node $node -ParentID $suspiciousProgramsID -Description "Suspicious Program" -ShortId "sp"
             }
 
             # double file extensions
             if($process.'Process Name') {
                 $dotCount = ($process.'Process Name'.ToCharArray() | Where-Object {$_ -eq '.'} | Measure-Object).Count
                 if($dotCount -gt 1) {
-                    New-Node -ID $($process.PID + "_dfe") -Text $process."Call Chain" -Tooltip $node.ToolTipText -Parent $doubleFileExtensionsID -Tag $node.Tag
+                    Set-Suspicious -Node $node -ParentID $doubleFileExtensionsID -Description "Double File Extension" -ShortId "dfe"
                 }
             }
 
@@ -698,7 +798,7 @@ function Fill-GUIData {
             if($process.CommandLine) {
                 foreach($suspiciousParameter in $SuspiciousParameters) {
                     if($process.'Process Name' -like $suspiciousParameter.Item1 -and $process.CommandLine -like $suspiciousParameter.Item2) {
-                        New-Node -ID $($process.PID + "_sparam") -Text $process."Call Chain" -Tooltip $node.ToolTipText -Parent $suspiciousParametersID -Tag $node.Tag
+                        Set-Suspicious -Node $node -ParentID $suspiciousParametersID -Description "Suspicious Command Line Parameters" -ShortId "sparam"
                     }
                 }
             }
@@ -708,7 +808,7 @@ function Fill-GUIData {
             # unusual file locations
             foreach($suspiciousFolder in $suspiciousFolders) {
                 if($process.'File Path' -like $suspiciousFolder) {
-                    New-Node -ID $($process.PID + "_sf") -Text $process."Call Chain" -Tooltip $node.ToolTipText -Parent $suspiciousFoldersID -Tag $node.Tag
+                    Set-Suspicious -Node $node -ParentID $suspiciousFoldersID -Description "Running in Suspicious Folder" -ShortId "sf"
                     break
                 }
             }
@@ -719,7 +819,7 @@ function Fill-GUIData {
                 $parentProcess = $parent.Tag
                 foreach($unusualRelationShip in $unusualRelationShips) {
                     if($parentProcess.'Process Name' -like $unusualRelationShip.Item1 -and $process.'File Path' -like $unusualRelationShip.Item2) {
-                        New-Node -ID $($process.PID + "_ur") -Text $process."Call Chain" -Tooltip $node.ToolTipText -Parent $unusualRelationShipsID -Tag $node.Tag
+                        Set-Suspicious -Node $node -ParentID $unusualRelationShipsID -Description "Unusual Parent<=>Child Relationship" -ShortId "ur"
                         break
                     }
                 }
