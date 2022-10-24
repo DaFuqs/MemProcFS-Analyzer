@@ -511,7 +511,7 @@ function Search-Nodes {
         if(!$clear) {
             $element = $node.Tag
             $match = $false
-            if($element -eq $null) {
+            if($null -eq $element) {
                 # node without element. Never matches
             } if($searchLocation -eq "Everywhere") {
                 foreach($property in $element.PSObject.Properties) {
@@ -535,7 +535,7 @@ function Search-Nodes {
                 do {
                     $expandSet.Add($currentNode)
                     $currentNode = $currentNode.Parent
-                } while ($currentNode -ne $null)
+                } while ($null -ne $currentNode)
             }
         }
     }
@@ -683,7 +683,7 @@ function Fill-GUIData {
     # iterate all nodes and attach each node to its parent
     foreach ($entry in $nodesMap.GetEnumerator()) {
         # skip nodes without tag (root tags)
-        if($entry.Value.Tag -eq $null) {
+        if($null -eq $entry.Value.Tag) {
             continue
         }
     
@@ -702,7 +702,7 @@ function Fill-GUIData {
         }
 
         # entries who PPID does not exist get attached to the ORPHANS node instead
-        if ($nodesMap[$currProcess.PPID] -eq $null) {
+        if ($null -eq $nodesMap[$currProcess.PPID]) {
             $currProcess.PPID = $orphanID
         }
     
@@ -749,11 +749,11 @@ function Fill-GUIData {
     # one last iteration: add a full path property to all nodes
     foreach ($node in @($nodesMap.Values)) {
         $process = $node.Tag
-        if($process -ne $null) {        
+        if($null -ne $process) {        
             # Add a "Call Chain" attribute
             $processTree = $node.Text
             $currentNode = $node
-            while($currentNode.Parent -ne $null -and $currentNode.Parent.Tag -ne $null) {
+            while($null -ne $currentNode.Parent -and $null -ne $currentNode.Parent.Tag) {
                 $parentNode = $currentNode.Parent
                 $processTree = $parentNode.Tag.'Process Name' + " → " + $processTree
                 $currentNode = $parentNode
@@ -770,7 +770,7 @@ function Fill-GUIData {
 
         # enumerate each process and search if they match any notable criteria
         # script interpreters
-        if($process.'Process Name' -ne $null) {
+        if($null -ne $process.'Process Name') {
             # script interpreters
             if ($process.'Process Name' -in $scriptInterpreters) {
                 Set-Suspicious -Node $node -ParentID $scriptInterpretersID -Description "Script Interpreter" -ShortId "in"
@@ -804,7 +804,7 @@ function Fill-GUIData {
             }
         }
 
-        if($process.'File Path' -ne $null) {
+        if($null -ne $process.'File Path') {
             # unusual file locations
             foreach($suspiciousFolder in $suspiciousFolders) {
                 if($process.'File Path' -like $suspiciousFolder) {
@@ -815,7 +815,7 @@ function Fill-GUIData {
         
             # unusual parent <=> child relationship
             $parentNode = $nodesMap[$node.Tag.PID]
-            if($parentNode -ne $null -and $parentNode.Tag -ne $null -and $parentNode.Tag.'Process Name' -ne $null) {
+            if($null -ne $parentNode -and $null -ne $parentNode.Tag -and $null -ne $parentNode.Tag.'Process Name') {
                 $parentProcess = $parent.Tag
                 foreach($unusualRelationShip in $unusualRelationShips) {
                     if($parentProcess.'Process Name' -like $unusualRelationShip.Item1 -and $process.'File Path' -like $unusualRelationShip.Item2) {
