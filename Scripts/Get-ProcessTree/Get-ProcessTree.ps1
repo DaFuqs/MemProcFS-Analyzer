@@ -1,15 +1,20 @@
-﻿<#
+<#
 .SYNOPSIS
     Shows a process history tree with data extracted from a MemProcFS-Analyzer process overview CSV
 .EXAMPLE
     PS> Get-ProcessTree.ps1 -CSVPath "~\Desktop\proc.csv"
-
     Shows the process tree using data from the given CSV
 .AUTHOR
 	Dominik Schmidt @ https://github.com/DaFuqs
 .VERSION
-    1.1
+    1.2
 .VERSION_HISTORY
+    1.2: - Fixed hang when pid<=>parent PPIDs result in a ppid loop (like when PIDs have been reused). Findings will be reported
+         - 4 new process masquerading checks:
+             - processes with unusual parents
+             - processes in unusual paths
+             - processes with an unusual number of instances
+             - similarly named processes to known-good ones
     1.1: - Double Clicking an Entry brings up a property view
          - Suspicious Entries get colored red and list their suspicion hits in their tooltip + properties view
     1.0: Public release
@@ -21,7 +26,7 @@ Param (
     # Path to the input CSV file
     [Parameter(Mandatory=$false, ValueFromPipeline=$true)]
 	[ValidateScript({try { Test-Path -Path $_ -PathType Leaf } catch { throw "No file at `"$_`"" }})] # test if there is a file at given location
-    [string] $CSVPath = "E:\Downloads\MemProc\proc.csv",
+    [string] $CSVPath = ".\proc.csv",
     
     # Process names of script interpreters
     # Will be matched 1:1
@@ -80,6 +85,51 @@ Param (
         [Tuple]::Create("rundll32.exe", "C:\Users\*")
     ),
 
+    # Known windows processes and their usual parents
+    [Parameter(Mandatory=$false)]
+    $ExpectedRelationships = @{
+        "csrss.exe" = @("smss.exe", "svchost.exe")
+        "LogonUI.exe" = @("wininit.exe", "winlogon.exe")
+        "lsass.exe" = @("wininit.exe")
+        "services.exe" = @("wininit.exe")
+        "smss.exe" = @("System", "smss.exe")
+        "spoolsv.exe" = @("services.exe")
+        "svchost.exe" = @("services.exe", "MsMpEng.exe", "svchost.exe")
+        "taskhost.exe" = @("services.exe", "svchost.exe")
+        "taskhostw.exe" = @("services.exe", "svchost.exe")
+        "userinit.exe" = @("dwm.exe", "winlogon.exe")
+        "wininit.exe" = @("smss.exe")
+        "winlogon.exe" = @("smss.exe")
+    },
+
+    # They will be matched using regex
+    [Parameter(Mandatory=$false)]
+    $ExpectedProcessPaths = @{
+        "csrss.exe" = "\\Windows\\System32\\csrss\.exe"
+        "explorer.exe" = "\\Windows\\explorer\.exe"
+        "lsass.exe" = "\\Windows\\System32\\lsass\.exe"
+        "lsm.exe" = "\\Windows\\System32\\lsm\.exe"
+        "services.exe" = "\\Windows\\System32\\services\.exe"
+        "smss.exe" = "\\Windows\\System32\\smss\.exe"
+        "svchost.exe" = "\\Windows\\(System32)?(SysWOW64)?\\svchost\.exe"
+        "taskhost.exe" = "\\Windows\\System32\\taskhost\.exe"
+        "taskhostw.exe" = "\\Windows\\System32\\taskhostw\.exe"
+        "wininit.exe" = "\\Windows\\System32\\wininit\.exe"
+        "winlogon.exe" = "\\Windows\\System32\\winlogon\.exe"
+    },
+
+    [Parameter(Mandatory=$false)]
+    $ExpectedProcessInstanceCounts = @{
+        "lsaiso.exe" = 1
+        "lsass.exe" = 1
+        "lsm.exe" = 1
+        "services.exe" = 1
+        "wininit.exe" = 1
+    },
+
+    [Parameter(Mandatory=$false)]
+    $ProcessesToSearchSimilarNames = @("csrss.exe", "dllhost.exe", "explorer.exe", "iexplore.exe", "lsass.exe", "sihost.exe", "smss.exe", "svchost.exe", "winlogon.exe"),
+
     # Directly display not only process names, but also PIDs
     [Parameter(Mandatory=$false)]
     [switch] $VisualPIDs = $true
@@ -90,6 +140,8 @@ Param (
 [void][System.Reflection.Assembly]::LoadWithPartialName("PresentationFramework")
 [void][System.Reflection.Assembly]::LoadWithPartialName("System.Drawing")
 [void][System.Reflection.Assembly]::LoadWithPartialName("System.Windows")
+
+. "$PSScriptRoot\DamerauLevenshteinDistance.ps1"
 
 # querying the entries of the csv file
 $csvEntries = @(Import-CSV -Path $CSVPath -Delimiter "`t")
@@ -109,20 +161,16 @@ try {
 using System;
 using System.Collections;
 using System.Windows.Forms;
-
 public class TreeNodeAlphanumComparator : IComparer {
-
     public int Compare(object x, object y) {
         TreeNode tx = x as TreeNode;
         TreeNode ty = y as TreeNode;
-
         if (tx == null) {
             return 0;
         }
         if (ty == null) {
             return 0;
         }
-
         string s1 = tx.Text;
         if (s1 == null) {
             return 0;
@@ -272,7 +320,6 @@ function Show-EntryWindow($entry) {
     }
 
     $entryForm.BackColor = [System.Drawing.SystemColors]::ControlLight
-
     $entryForm.Controls.Add($dataGridView)
     $entryForm.Show()
 }
@@ -546,12 +593,14 @@ function Search-Nodes {
     $TreeView.EndUpdate()
 }
 
-function New-Node($ID, $Text, $Tooltip, $Parent, $Tag) {
+function New-Node($ID, $Text, $Tooltip, $Parent, $Tag, [switch] $AddToMap) {
     $newNode = New-Object System.Windows.Forms.TreeNode
     $newNode.Name = $ID
     $newNode.Text = if($Text) { $Text } else { "<unknown>" }
     $newNode.ToolTipText = $Tooltip
-    $nodesMap[$ID] = $newNode
+    if($AddToMap) {
+        $nodesMap[$ID] = $newNode
+    }
     if($Tag) {
         $newNode.Tag = $Tag
     }
@@ -603,7 +652,10 @@ function Fill-GUIData {
     })
     
     $TreeView.Add_NodeMouseDoubleClick({
-        Show-EntryWindow($_.Node.Tag)
+        if($_.Node.Tag) {
+            Show-EntryWindow($_.Node.Tag)
+            return $false
+        }
     })
     $nodesMap = @{}
     
@@ -614,36 +666,47 @@ function Fill-GUIData {
 
     # a list of dedicated (root) nodes for special case handling
     $orphanID = $((New-Guid).Guid)
-    New-Node -ID $orphanID -Text "Orphan Processes" -Tooltip "Processes where parent processes could not be found anymore"
+    New-Node -ID $orphanID -Text "Orphan Processes" -Tooltip "Processes where parent processes could not be found anymore" -AddToMap
 
     $notableID = $((New-Guid).Guid)
-    New-Node -ID $notableID -Text "Alert Messages" -Tooltip "Common low hanging fruits"
+    New-Node -ID $notableID -Text "Alert Messages" -Tooltip "Common low hanging fruits" -AddToMap
 
     # LP_Windows Processes Suspicious Parent Directory Detected
     # Trigger Condition: Suspicious parent processes of Windows processes are detected.
     # ATT&CK Category: Defense Evasion
     # ATT&CK Tag: Masquerading
-    # ATT&CK ID: 
     $unusualRelationShipsID = $((New-Guid).Guid)
-    New-Node -ID $unusualRelationShipsID -Text "Suspicious Parent-Child Relationships [T1036]" -Tooltip "Processes called from an unusual parent process" -Parent $notableID
+    New-Node -ID $unusualRelationShipsID -Text "Suspicious Parent-Child Relationships [T1036]" -Tooltip "Processes called from an unusual parent process" -Parent $notableID -AddToMap
 
     $scriptInterpretersID = $((New-Guid).Guid)
-    New-Node -ID $scriptInterpretersID -Text "Command and Scripting Interpreters [T1059]" -Tooltip "Common low hanging fruits" -Parent $notableID
+    New-Node -ID $scriptInterpretersID -Text "Command and Scripting Interpreters [T1059]" -Tooltip "CMD, Python, VB, Powershell, you name it" -Parent $notableID -AddToMap
 
     $suspiciousFoldersID = $((New-Guid).Guid)
-    New-Node -ID $suspiciousFoldersID -Text "Suspicious Process File Path [T1543]" -Tooltip "Process Execution from an Unusual Directory" -Parent $notableID
+    New-Node -ID $suspiciousFoldersID -Text "Suspicious Process File Path [T1543]" -Tooltip "Process Execution from an Unusual Directory" -Parent $notableID -AddToMap
 
     $lateralMovementProgramsID = $((New-Guid).Guid)
-    New-Node -ID $lateralMovementProgramsID -Text "Lateral Movement Tools [TA0008]" -Tooltip "Process Execution from an Unusual Directory" -Parent $notableID
+    New-Node -ID $lateralMovementProgramsID -Text "Lateral Movement Tools [TA0008]" -Tooltip "Process Execution from an Unusual Directory" -Parent $notableID -AddToMap
 
     $suspiciousProgramsID = $((New-Guid).Guid)
-    New-Node -ID $suspiciousProgramsID -Text "Suspicious Program Execution [T1218, T1127.001, T1087.002]" -Tooltip "All kinds of suspicious Programs, usually used for Discovery, Privilege Escalation to Proxy Execution" -Parent $notableID
+    New-Node -ID $suspiciousProgramsID -Text "Suspicious Program Execution [T1218, T1127.001, T1087.002]" -Tooltip "All kinds of suspicious Programs, usually used for Discovery, Privilege Escalation to Proxy Execution" -Parent $notableID -AddToMap
 
     $doubleFileExtensionsID = $((New-Guid).Guid)
-    New-Node -ID $doubleFileExtensionsID -Text "Double File Extensions [T1036.007]" -Tooltip "Processes spawned from execuables using a double file extension, most often in a way to deceive users to execute malicious payloads, like 'invoice.doc.exe'" -Parent $notableID
+    New-Node -ID $doubleFileExtensionsID -Text "Double File Extensions [T1036.007]" -Tooltip "Processes spawned from execuables using a double file extension, most often in a way to deceive users to execute malicious payloads, like 'invoice.doc.exe'" -Parent $notableID -AddToMap
 
     $suspiciousParametersID = $((New-Guid).Guid)
-    New-Node -ID $suspiciousParametersID -Text "Suspicious Command Line Parameters" -Tooltip "Command Line Parameters that are oftentimes used my malware" -Parent $notableID
+    New-Node -ID $suspiciousParametersID -Text "Suspicious Command Line Parameters" -Tooltip "Command Line Parameters that are oftentimes used my malware" -Parent $notableID -AddToMap
+
+    $expectedRelationshipDiscrepancyID = $((New-Guid).Guid)
+    New-Node -ID $expectedRelationshipDiscrepancyID -Text "Processes with different Parent than usual [T1036.005]" -Tooltip "The process loading chain of system processes is mostly fixed, like lsass.exe always getting started via wininit.exe. Are there discrepancies, chances are they got started for means of process injection, or by giving a malicious payload the same name as a known good process, but in a different path." -Parent $notableID -AddToMap
+    
+    $expectedProcessPathDiscrepancyID = $((New-Guid).Guid)
+    New-Node -ID $expectedProcessPathDiscrepancyID -Text "Known Process Names in different Path [T1036.005]" -Tooltip "System processes have a dedicated path where their executables are stored (such as in %windir%). If a process with a well known name runs in a different folder, chances are it is malicious and the name was chosen to fly under the radar" -Parent $notableID -AddToMap
+    
+    $expectedProcessInstanceDiscrepancyID = $((New-Guid).Guid)
+    New-Node -ID $expectedProcessInstanceDiscrepancyID -Text "Process instance count mismatch [T1036.005]" -Tooltip "Lots of system processes have a fixed number of instances runnung simultaneously - most often 1. If there are more, chances are they got started for means of process injection, or by giving a malicious payload the same name as a known good process, but in a different path." -Parent $notableID -AddToMap
+    
+    $ProcessNameMasqueradingID = $((New-Guid).Guid)
+    New-Node -ID $ProcessNameMasqueradingID -Text "Process Name Masquerading [T1036.005]" -Tooltip "Attackers name their payloads similar to known system processes to avoid detection. Something like 'lsaas.exe' closely resembles the legitimate 'lsass.exe' on first glance." -Parent $notableID -AddToMap
 
     # create nodes, but not attach them yet. It will make parent search possible.
     foreach ($csvEntry in $csvEntries) {
@@ -802,6 +865,40 @@ function Fill-GUIData {
                     }
                 }
             }
+
+            # known good processes but with unusual parent
+            if($ExpectedRelationships.ContainsKey($process.'Process Name')) {
+                $acceptableParents = $ExpectedRelationships[$process.'Process Name']
+                $parentProcessNode = $nodesMap[$process.PPID]
+                if($null -ne $parentProcessNode -and $null -ne $parentProcessNode.Tag) {
+                    if($parentProcessNode.Tag.'Process Name' -notin $acceptableParents) {
+                        Set-Suspicious -Node $node -ParentID $expectedRelationshipDiscrepancyID -Description $("Parent process mismatch. Should match one of: " + $acceptableParents -join ", ") -ShortId "accp"
+                    }
+                }
+            }
+
+            # check the number of running instances with the same process name.
+            # does the found count match the expected count?
+            if($ExpectedProcessInstanceCounts.ContainsKey($process.'Process Name')) {
+                $expectedInstances = $ExpectedProcessInstanceCounts[$process.'Process Name']
+                [int] $runningInstances = 0 # the upcoming loop also counts this instance, so we start at 0 instead of 1
+                foreach($mapNode in $nodesMap.Values) {
+                    if($null -ne $mapNode.Tag -and $process.'Process Name' -eq $mapNode.Tag.'Process Name') {
+                        $runningInstances++
+                    }
+                }
+                if($expectedInstances -ne $runningInstances) {
+                    Set-Suspicious -Node $node -ParentID $expectedProcessInstanceDiscrepancyID -Description $("Found " + $runningInstances + " running instances instead of the expected " + $expectedInstances) -ShortId "eicm"
+                }
+            }
+
+            # check if this process name is typed very similar than known good ones
+            foreach($similarName in $ProcessesToSearchSimilarNames) {
+                [int] $distance = Measure-DamerauLevenshteinDistance -Original $process.'Process Name' -Modified $similarName
+                if($distance -eq 1) {
+                    Set-Suspicious -Node $node -ParentID $ProcessNameMasqueradingID -Description $("Name " + $process.'Process Name' + " is very similar to known " + $similarName) -ShortId "pnm"
+                }
+            }
         }
 
         if($null -ne $process.'File Path') {
@@ -814,16 +911,27 @@ function Fill-GUIData {
             }
         
             # unusual parent <=> child relationship
-            $parentNode = $nodesMap[$node.Tag.PID]
-            if($null -ne $parentNode -and $null -ne $parentNode.Tag -and $null -ne $parentNode.Tag.'Process Name') {
-                $parentProcess = $parent.Tag
-                foreach($unusualRelationShip in $unusualRelationShips) {
-                    if($parentProcess.'Process Name' -like $unusualRelationShip.Item1 -and $process.'File Path' -like $unusualRelationShip.Item2) {
-                        Set-Suspicious -Node $node -ParentID $unusualRelationShipsID -Description "Unusual Parent<=>Child Relationship" -ShortId "ur"
-                        break
+            if($node.Tag.PID -and $nodesMap.ContainsKey($node.Tag.PID)) {
+                $parentNode = $nodesMap[$node.Tag.PID]
+                if($null -ne $parentNode -and $null -ne $parentNode.Tag -and $null -ne $parentNode.Tag.'Process Name') {
+                    $parentProcess = $parent.Tag
+                    foreach($unusualRelationShip in $unusualRelationShips) {
+                        if($parentProcess.'Process Name' -like $unusualRelationShip.Item1 -and $process.'File Path' -like $unusualRelationShip.Item2) {
+                            Set-Suspicious -Node $node -ParentID $unusualRelationShipsID -Description "Unusual Parent<=>Child Relationship" -ShortId "ur"
+                            break
+                        }
                     }
                 }
             }
+
+            # known good programs, but in unusual path
+            if($null -ne $process.'Process Name' -and $ExpectedProcessPaths.ContainsKey($process.'Process Name')) {
+                $knownPath = $ExpectedProcessPaths[$process.'Process Name']
+                if($process.'Device Path' -notmatch $knownPath) {
+                    Set-Suspicious -Node $node -ParentID $expectedProcessPathDiscrepancyID -Description $("Process Path mismatch. Should match: '" + $knownPath + "'") -ShortId "kppm"
+                }
+            }
+
         }
 
 
