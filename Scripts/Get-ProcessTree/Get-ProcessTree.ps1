@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Shows a process history tree with data extracted from a MemProcFS-Analyzer process overview CSV
 .EXAMPLE
@@ -162,7 +162,7 @@ $csvEntries = @(Import-CSV -Path $CSVPath -Delimiter "`t")
 try {
     [LevenshteinDistance]::new() -as [Type] | Out-Null
 } catch {
-    Add-Type -Path (Join-Path $PSScriptRoot -ChildPath "LevenshteinDistance.cs") | Out-Null
+    Add-Type -Path (Join-Path $PSScriptRoot -ChildPath "..\LevenshteinDistance.cs") | Out-Null
 }
 
 
@@ -827,12 +827,12 @@ function Fill-GUIData {
                 $cyclicalPIDRelationship = $true
                 break
             }
+        }
 
-            if($cyclicalPIDRelationship) {
-                if(-not $orphanNode.Nodes.Contains($checkNode)) {
-                    Note-Suspicious -Node $checkNode -Description "Cyclical PID Relationship (Process with PID $($checkProcess.PPID) is a child process of this)"
-                    [void] $orphanNode.Nodes.Add($checkNode)
-                }
+        if($cyclicalPIDRelationship) {
+            if(-not $orphanNode.Nodes.Contains($checkNode)) {
+                Note-Suspicious -Node $checkNode -Description "Cyclical PID Relationship (Process with PID $($checkProcess.PPID) is a child process of this)"
+                [void] $orphanNode.Nodes.Add($checkNode)
             }
         }
 
