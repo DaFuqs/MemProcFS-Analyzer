@@ -9,7 +9,8 @@
 .VERSION
     1.3
 .VERSION_HISTORY
-    1.3: - Orphaned processes get that listed in the "Suspicious" tag
+    1.3: - Use a compiled version of DamerauLevenshteinDistance for increased performance
+         - Orphaned processes get that listed in the "Suspicious" tag
          - New Switch Param: NoSuspiciousChecks: for when you just want a quick process tree without automatic checks for suspicious entries
          - Right click menu for the popup process properties window to copy selected/all values
     1.2: - Fixed hang when pid<=>parent PPIDs result in a ppid loop (like when PIDs have been reused). Findings will be reported
@@ -148,7 +149,6 @@ Param (
 [void][System.Reflection.Assembly]::LoadWithPartialName("System.Drawing")
 [void][System.Reflection.Assembly]::LoadWithPartialName("System.Windows")
 
-. "$PSScriptRoot\DamerauLevenshteinDistance.ps1"
 
 # querying the entries of the csv file
 $csvEntries = @(Import-CSV -Path $CSVPath -Delimiter "`t")
@@ -157,6 +157,14 @@ $csvEntries = @(Import-CSV -Path $CSVPath -Delimiter "`t")
 ####################################
 #region    DOTNET-SHENANIGANS      #
 ####################################
+
+
+try {
+    [LevenshteinDistance]::new() -as [Type] | Out-Null
+} catch {
+    Add-Type -Path (Join-Path $PSScriptRoot -ChildPath "LevenshteinDistance.cs") | Out-Null
+}
+
 
 # Fuse of
 # https://docs.microsoft.com/en-us/dotnet/api/system.windows.forms.treeview.treeviewnodesorter
@@ -922,7 +930,7 @@ function Fill-GUIData {
 
                 # check if this process name is typed very similar than known good ones
                 foreach($similarName in $ProcessesToSearchSimilarNames) {
-                    [int] $distance = Measure-DamerauLevenshteinDistance -Original $process.'Process Name' -Modified $similarName
+                    [int] $distance = [LevenshteinDistance]::Measure($process.'Process Name', $similarName)
                     if($distance -eq 1) {
                         Set-Suspicious -Node $node -ParentID $ProcessNameMasqueradingID -Description $("Name " + $process.'Process Name' + " is very similar to known " + $similarName) -ShortId "pnm"
                     }
