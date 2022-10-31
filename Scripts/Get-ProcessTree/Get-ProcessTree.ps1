@@ -7,8 +7,11 @@
 .AUTHOR
 	Dominik Schmidt @ https://github.com/DaFuqs
 .VERSION
-    1.2
+    1.3
 .VERSION_HISTORY
+    1.3: - Orphaned processes get that listed in the "Suspicious" tag
+         - New Switch Param: NoSuspiciousChecks: for when you just want a quick process tree without automatic checks for suspicious entries
+         - Right click menu for the popup process properties window to copy selected/all values
     1.2: - Fixed hang when pid<=>parent PPIDs result in a ppid loop (like when PIDs have been reused). Findings will be reported
          - 4 new process masquerading checks:
              - processes with unusual parents
@@ -132,7 +135,11 @@ Param (
 
     # Directly display not only process names, but also PIDs
     [Parameter(Mandatory=$false)]
-    [switch] $VisualPIDs = $true
+    [switch] $VisualPIDs = $true,
+    
+    # Skips all checks of suspicous entries, making the GUI display much faster
+    [Parameter(Mandatory=$false)]
+    [switch] $NoSuspiciousChecks
 )
 
 [void][System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms")
@@ -291,13 +298,13 @@ function Show-EntryWindow($entry) {
     # create form for displaying the folder tree
     $entryForm = New-Object System.Windows.Forms.Form
     $entryForm.Text = $entry."Process Name" + ": " + $entry.PID + " - Properties"
-    $entryForm.Size = New-Object System.Drawing.Size(500, 372)
+    $entryForm.Size = New-Object System.Drawing.Size(500, 350)
     $entryForm.Icon = $icon
 
     $alternateCellStyle = New-Object System.Windows.Forms.DataGridViewCellStyle
     $alternateCellStyle.BackColor = [System.Drawing.SystemColors]::ControlLight
     
-    $dataGridView = New-Object System.Windows.Forms.DataGridView
+    $script:dataGridView = New-Object System.Windows.Forms.DataGridView
     $dataGridView.Name = "EntryPropertiesGridView"
     $dataGridView.AllowUserToAddRows = $false
     $dataGridView.AllowUserToDeleteRows = $false
@@ -314,6 +321,23 @@ function Show-EntryWindow($entry) {
     $dataGridView.AlternatingRowsDefaultCellStyle = $alternateCellStyle
     $dataGridView.SelectionMode = [System.Windows.Forms.DataGridViewSelectionMode]::FullRowSelect
     $dataGridView.Dock = [System.Windows.Forms.DockStyle]::Fill
+
+    $contextMenuStrip = New-Object System.Windows.Forms.ContextMenuStrip
+    $contextMenuStrip.Items.Add("Copy highlighted rows").add_Click({
+        $sb = New-Object System.Text.StringBuilder
+        foreach($row in $dataGridView.SelectedRows) {
+            $sb.AppendLine($row.Cells[0].Value + " " + $row.Cells[1].Value)
+        }
+        [System.Windows.Forms.Clipboard]::SetText($sb.ToString())
+    })
+    $contextMenuStrip.Items.Add("Copy all rows").add_Click({
+        $sb = New-Object System.Text.StringBuilder
+        foreach($row in $dataGridView.Rows) {
+            $sb.AppendLine($row.Cells[0].Value + " " + $row.Cells[1].Value)
+        }
+        [System.Windows.Forms.Clipboard]::SetText($sb.ToString())
+    })
+    $dataGridView.ContextMenuStrip = $contextMenuStrip
 
     foreach($property in $entry.psobject.Properties) {
         $dataGridView.Rows.Add($property.Name + ":", $property.Value)
@@ -765,8 +789,10 @@ function Fill-GUIData {
         }
 
         # entries who PPID does not exist get attached to the ORPHANS node instead
-        if ($null -eq $nodesMap[$currProcess.PPID]) {
-            $currProcess.PPID = $orphanID
+        $parentNode = $nodesMap[$currProcess.PPID]
+        if ($null -eq $parentNode) {
+            $parentNode = $orphanNode
+            $currProcess.Suspicious = "Orphaned"
         }
     
         # attach this node to the element with matching PID => PPID
@@ -789,23 +815,24 @@ function Fill-GUIData {
             $checkProcess = $checkNode.Tag
             Write-Verbose "...checking $($checkProcess.PID) (Tree: $($PIDTreeList))"
             if($PIDTreeList.Contains($checkProcess.PID)) {
-                Write-Verbose ......"Cyclical Relationship found: PID $($checkProcess.PID)"
+                Write-Verbose "......cyclical pid<=>ppid relationship found: PID $($checkProcess.PID)"
                 $cyclicalPIDRelationship = $true
                 break
             }
-        }
 
-        if($cyclicalPIDRelationship) {
-            if(-not $orphanNode.Nodes.Contains($checkNode)) {
-                Note-Suspicious -Node $checkNode -Description "Cyclical PID Relationship (Process with PID $($checkProcess.PPID) is a child process of this)"
-                [void] $orphanNode.Nodes.Add($checkNode)
+            if($cyclicalPIDRelationship) {
+                if(-not $orphanNode.Nodes.Contains($checkNode)) {
+                    Note-Suspicious -Node $checkNode -Description "Cyclical PID Relationship (Process with PID $($checkProcess.PPID) is a child process of this)"
+                    [void] $orphanNode.Nodes.Add($checkNode)
+                }
             }
         }
+
         if($cyclicalParent -and $checkProcess -eq $currProcess) {
             Write-Verbose "NOT ADDING $($currProcess.PID) to node with PID $($nodesMap[$currProcess.PPID].Tag.PID) - currently already: $($nodesMap[$currProcess.PPID].Nodes.Tag.PID)"
         } else {
             Write-Verbose "Adding $($currProcess.PID) to node with PID $($nodesMap[$currProcess.PPID].Tag.PID) - currently already: $($nodesMap[$currProcess.PPID].Nodes.Tag.PID)"
-            [void] $nodesMap[$currProcess.PPID].Nodes.Add($currNode)
+            [void] $parentNode.Nodes.Add($currNode)
         }
     }
 
@@ -831,109 +858,109 @@ function Fill-GUIData {
             $node.ToolTipText = ($process | Out-String).Trim() -replace " *:", ":"
         }
 
-        # enumerate each process and search if they match any notable criteria
-        # script interpreters
-        if($null -ne $process.'Process Name') {
+        if(-not $NoSuspiciousChecks) {
+            # enumerate each process and search if they match any notable criteria
             # script interpreters
-            if ($process.'Process Name' -in $scriptInterpreters) {
-                Set-Suspicious -Node $node -ParentID $scriptInterpretersID -Description "Script Interpreter" -ShortId "in"
-            }
-
-            # lateral movement programs
-            if($process.'Process Name' -in $LateralMovementPrograms) {
-                Set-Suspicious -Node $node -ParentID $lateralMovementProgramsID -Description "Lateral Movement Program" -ShortId "lm"
-            }
-
-            # suspicious programs
-            if($process.'Process Name' -in $SuspiciousPrograms) {
-                Set-Suspicious -Node $node -ParentID $suspiciousProgramsID -Description "Suspicious Program" -ShortId "sp"
-            }
-
-            # double file extensions
-            if($process.'Process Name') {
-                $dotCount = ($process.'Process Name'.ToCharArray() | Where-Object {$_ -eq '.'} | Measure-Object).Count
-                if($dotCount -gt 1) {
-                    Set-Suspicious -Node $node -ParentID $doubleFileExtensionsID -Description "Double File Extension" -ShortId "dfe"
+            if($null -ne $process.'Process Name') {
+                # script interpreters
+                if ($process.'Process Name' -in $scriptInterpreters) {
+                    Set-Suspicious -Node $node -ParentID $scriptInterpretersID -Description "Script Interpreter" -ShortId "in"
                 }
-            }
 
-            # suspicious parameters
-            if($process.CommandLine) {
-                foreach($suspiciousParameter in $SuspiciousParameters) {
-                    if($process.'Process Name' -like $suspiciousParameter.Item1 -and $process.CommandLine -like $suspiciousParameter.Item2) {
-                        Set-Suspicious -Node $node -ParentID $suspiciousParametersID -Description "Suspicious Command Line Parameters" -ShortId "sparam"
+                # lateral movement programs
+                if($process.'Process Name' -in $LateralMovementPrograms) {
+                    Set-Suspicious -Node $node -ParentID $lateralMovementProgramsID -Description "Lateral Movement Program" -ShortId "lm"
+                }
+
+                # suspicious programs
+                if($process.'Process Name' -in $SuspiciousPrograms) {
+                    Set-Suspicious -Node $node -ParentID $suspiciousProgramsID -Description "Suspicious Program" -ShortId "sp"
+                }
+
+                # double file extensions
+                if($process.'Process Name') {
+                    $dotCount = ($process.'Process Name'.ToCharArray() | Where-Object {$_ -eq '.'} | Measure-Object).Count
+                    if($dotCount -gt 1) {
+                        Set-Suspicious -Node $node -ParentID $doubleFileExtensionsID -Description "Double File Extension" -ShortId "dfe"
                     }
                 }
-            }
 
-            # known good processes but with unusual parent
-            if($ExpectedRelationships.ContainsKey($process.'Process Name')) {
-                $acceptableParents = $ExpectedRelationships[$process.'Process Name']
-                $parentProcessNode = $nodesMap[$process.PPID]
-                if($null -ne $parentProcessNode -and $null -ne $parentProcessNode.Tag) {
-                    if($parentProcessNode.Tag.'Process Name' -notin $acceptableParents) {
-                        Set-Suspicious -Node $node -ParentID $expectedRelationshipDiscrepancyID -Description $("Parent process mismatch. Should match one of: " + $acceptableParents -join ", ") -ShortId "accp"
-                    }
-                }
-            }
-
-            # check the number of running instances with the same process name.
-            # does the found count match the expected count?
-            if($ExpectedProcessInstanceCounts.ContainsKey($process.'Process Name')) {
-                $expectedInstances = $ExpectedProcessInstanceCounts[$process.'Process Name']
-                [int] $runningInstances = 0 # the upcoming loop also counts this instance, so we start at 0 instead of 1
-                foreach($mapNode in $nodesMap.Values) {
-                    if($null -ne $mapNode.Tag -and $process.'Process Name' -eq $mapNode.Tag.'Process Name') {
-                        $runningInstances++
-                    }
-                }
-                if($expectedInstances -ne $runningInstances) {
-                    Set-Suspicious -Node $node -ParentID $expectedProcessInstanceDiscrepancyID -Description $("Found " + $runningInstances + " running instances instead of the expected " + $expectedInstances) -ShortId "eicm"
-                }
-            }
-
-            # check if this process name is typed very similar than known good ones
-            foreach($similarName in $ProcessesToSearchSimilarNames) {
-                [int] $distance = Measure-DamerauLevenshteinDistance -Original $process.'Process Name' -Modified $similarName
-                if($distance -eq 1) {
-                    Set-Suspicious -Node $node -ParentID $ProcessNameMasqueradingID -Description $("Name " + $process.'Process Name' + " is very similar to known " + $similarName) -ShortId "pnm"
-                }
-            }
-        }
-
-        if($null -ne $process.'File Path') {
-            # unusual file locations
-            foreach($suspiciousFolder in $suspiciousFolders) {
-                if($process.'File Path' -like $suspiciousFolder) {
-                    Set-Suspicious -Node $node -ParentID $suspiciousFoldersID -Description "Running in Suspicious Folder" -ShortId "sf"
-                    break
-                }
-            }
-        
-            # unusual parent <=> child relationship
-            if($node.Tag.PID -and $nodesMap.ContainsKey($node.Tag.PID)) {
-                $parentNode = $nodesMap[$node.Tag.PID]
-                if($null -ne $parentNode -and $null -ne $parentNode.Tag -and $null -ne $parentNode.Tag.'Process Name') {
-                    $parentProcess = $parent.Tag
-                    foreach($unusualRelationShip in $unusualRelationShips) {
-                        if($parentProcess.'Process Name' -like $unusualRelationShip.Item1 -and $process.'File Path' -like $unusualRelationShip.Item2) {
-                            Set-Suspicious -Node $node -ParentID $unusualRelationShipsID -Description "Unusual Parent<=>Child Relationship" -ShortId "ur"
-                            break
+                # suspicious parameters
+                if($process.CommandLine) {
+                    foreach($suspiciousParameter in $SuspiciousParameters) {
+                        if($process.'Process Name' -like $suspiciousParameter.Item1 -and $process.CommandLine -like $suspiciousParameter.Item2) {
+                            Set-Suspicious -Node $node -ParentID $suspiciousParametersID -Description "Suspicious Command Line Parameters" -ShortId "sparam"
                         }
                     }
                 }
-            }
 
-            # known good programs, but in unusual path
-            if($null -ne $process.'Process Name' -and $ExpectedProcessPaths.ContainsKey($process.'Process Name')) {
-                $knownPath = $ExpectedProcessPaths[$process.'Process Name']
-                if($process.'Device Path' -notmatch $knownPath) {
-                    Set-Suspicious -Node $node -ParentID $expectedProcessPathDiscrepancyID -Description $("Process Path mismatch. Should match: '" + $knownPath + "'") -ShortId "kppm"
+                # known good processes but with unusual parent
+                if($ExpectedRelationships.ContainsKey($process.'Process Name')) {
+                    $acceptableParents = $ExpectedRelationships[$process.'Process Name']
+                    $parentProcessNode = $nodesMap[$process.PPID]
+                    if($null -ne $parentProcessNode -and $null -ne $parentProcessNode.Tag) {
+                        if($parentProcessNode.Tag.'Process Name' -notin $acceptableParents) {
+                            Set-Suspicious -Node $node -ParentID $expectedRelationshipDiscrepancyID -Description $("Parent process mismatch. Should match one of: " + $acceptableParents -join ", ") -ShortId "accp"
+                        }
+                    }
+                }
+
+                # check the number of running instances with the same process name.
+                # does the found count match the expected count?
+                if($ExpectedProcessInstanceCounts.ContainsKey($process.'Process Name')) {
+                    $expectedInstances = $ExpectedProcessInstanceCounts[$process.'Process Name']
+                    [int] $runningInstances = 0 # the upcoming loop also counts this instance, so we start at 0 instead of 1
+                    foreach($mapNode in $nodesMap.Values) {
+                        if($null -ne $mapNode.Tag -and $process.'Process Name' -eq $mapNode.Tag.'Process Name') {
+                            $runningInstances++
+                        }
+                    }
+                    if($expectedInstances -ne $runningInstances) {
+                        Set-Suspicious -Node $node -ParentID $expectedProcessInstanceDiscrepancyID -Description $("Found " + $runningInstances + " running instances instead of the expected " + $expectedInstances) -ShortId "eicm"
+                    }
+                }
+
+                # check if this process name is typed very similar than known good ones
+                foreach($similarName in $ProcessesToSearchSimilarNames) {
+                    [int] $distance = Measure-DamerauLevenshteinDistance -Original $process.'Process Name' -Modified $similarName
+                    if($distance -eq 1) {
+                        Set-Suspicious -Node $node -ParentID $ProcessNameMasqueradingID -Description $("Name " + $process.'Process Name' + " is very similar to known " + $similarName) -ShortId "pnm"
+                    }
                 }
             }
 
-        }
+            if($null -ne $process.'File Path') {
+                # unusual file locations
+                foreach($suspiciousFolder in $suspiciousFolders) {
+                    if($process.'File Path' -like $suspiciousFolder) {
+                        Set-Suspicious -Node $node -ParentID $suspiciousFoldersID -Description "Running in Suspicious Folder" -ShortId "sf"
+                        break
+                    }
+                }
+        
+                # unusual parent <=> child relationship
+                if($node.Tag.PID -and $nodesMap.ContainsKey($node.Tag.PID)) {
+                    $parentNode = $nodesMap[$node.Tag.PID]
+                    if($null -ne $parentNode -and $null -ne $parentNode.Tag -and $null -ne $parentNode.Tag.'Process Name') {
+                        $parentProcess = $parent.Tag
+                        foreach($unusualRelationShip in $unusualRelationShips) {
+                            if($parentProcess.'Process Name' -like $unusualRelationShip.Item1 -and $process.'File Path' -like $unusualRelationShip.Item2) {
+                                Set-Suspicious -Node $node -ParentID $unusualRelationShipsID -Description "Unusual Parent<=>Child Relationship" -ShortId "ur"
+                                break
+                            }
+                        }
+                    }
+                }
 
+                # known good programs, but in unusual path
+                if($null -ne $process.'Process Name' -and $ExpectedProcessPaths.ContainsKey($process.'Process Name')) {
+                    $knownPath = $ExpectedProcessPaths[$process.'Process Name']
+                    if($process.'Device Path' -notmatch $knownPath) {
+                        Set-Suspicious -Node $node -ParentID $expectedProcessPathDiscrepancyID -Description $("Process Path mismatch. Should match: '" + $knownPath + "'") -ShortId "kppm"
+                    }
+                }
+            }
+        }
 
     }
 
