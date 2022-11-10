@@ -162,7 +162,7 @@ $csvEntries = @(Import-CSV -Path $CSVPath -Delimiter "`t")
 try {
     [LevenshteinDistance]::new() -as [Type] | Out-Null
 } catch {
-    Add-Type -Path (Join-Path $PSScriptRoot -ChildPath "..\LevenshteinDistance.cs") | Out-Null
+    Add-Type -Path (Join-Path $PSScriptRoot -ChildPath "..\Measure-DamerauLevenshteinDistance\Measure-DamerauLevenshteinDistance.cs") | Out-Null
 }
 
 
