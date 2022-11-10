@@ -306,7 +306,7 @@ function Show-EntryWindow($entry) {
     # create form for displaying the folder tree
     $entryForm = New-Object System.Windows.Forms.Form
     $entryForm.Text = $entry."Process Name" + ": " + $entry.PID + " - Properties"
-    $entryForm.Size = New-Object System.Drawing.Size(500, 350)
+    $entryForm.Size = New-Object System.Drawing.Size(500, 372)
     $entryForm.Icon = $icon
 
     $alternateCellStyle = New-Object System.Windows.Forms.DataGridViewCellStyle
