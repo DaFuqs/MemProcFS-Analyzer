@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Shows a process history tree with data extracted from a MemProcFS-Analyzer process overview CSV
 .EXAMPLE
@@ -740,6 +740,9 @@ function Fill-GUIData {
     $ProcessNameMasqueradingID = $((New-Guid).Guid)
     New-Node -ID $ProcessNameMasqueradingID -Text "Process Name Masquerading [T1036.005]" -Tooltip "Attackers name their payloads similar to known system processes to avoid detection. Something like 'lsaas.exe' closely resembles the legitimate 'lsass.exe' on first glance." -Parent $notableID -AddToMap
 
+    $runningInUNCNetworkPathID = $((New-Guid).Guid)
+    New-Node -ID $runningInUNCNetworkPathID -Text "Processes running from UNC Network Paths" -Tooltip "Processes running in UNC paths can hint to remote execution through file shares without having to copy malicious files to the local system" -Parent $notableID -AddToMap
+
     # create nodes, but not attach them yet. It will make parent search possible.
     foreach ($csvEntry in $csvEntries) {
         # Add a "Suspicious" attribute
@@ -967,6 +970,12 @@ function Fill-GUIData {
                         Set-Suspicious -Node $node -ParentID $expectedProcessPathDiscrepancyID -Description $("Process Path mismatch. Should match: '" + $knownPath + "'") -ShortId "kppm"
                     }
                 }
+
+                # running in unc path
+                if($process.'File Path'.StartsWith("\\")) {
+                    Set-Suspicious -Node $node -ParentID $runningInUNCNetworkPathID -Description $("Running in UNC network path") -ShortId "unc"
+                }
+
             }
         }
 
