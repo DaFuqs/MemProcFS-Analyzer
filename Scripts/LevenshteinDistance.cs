@@ -1,6 +1,8 @@
 using System;
 using System.Linq;
 
+// Original by Jared Atkinson (@jaredcatkinson)
+// ported to C# by https://github.com/DaFuqs
 public class LevenshteinDistance {
 
 	public static int Measure(string original, string modified) {
