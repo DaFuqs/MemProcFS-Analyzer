@@ -7,8 +7,9 @@
 .AUTHOR
 	Dominik Schmidt @ https://github.com/DaFuqs
 .VERSION
-    1.3
+    1.4
 .VERSION_HISTORY
+    1.4: - Nodes to not expand / subtract on double click anymore. This action is already used for opening the properties window
     1.3: - Use a compiled version of DamerauLevenshteinDistance for increased performance
          - Orphaned processes get that listed in the "Suspicious" tag
          - New Switch Param: NoSuspiciousChecks: for when you just want a quick process tree without automatic checks for suspicious entries
@@ -668,6 +669,13 @@ function Set-Nodes($Root, $Depth, $Collapsed) {
    $TreeView.EndUpdate()
 }
 
+<#
+    In the tree view, we want nodes that are double clicked on, to show a properties view popup.
+    Since by default, tree nodes have an event mapped to double click already (namely expanding / collapsing the node),
+    we have to check if it's a double click in BeforeExpand() and BeforeCollapse() and cancel this default behavior
+    so it does not interfere with the opening of our new properties window
+    The user is still able to nagigate the tree via keyboard, or as usual, by using the +/- buttons on each node
+#>
 $script:CancelNodeExpanding = $false
 
 function Fill-GUIData {
@@ -688,6 +696,9 @@ function Fill-GUIData {
         $script:CancelNodeExpanding = $_.Clicks -gt 1
     })
     $TreeView.Add_BeforeExpand({
+        $_.Cancel = $script:CancelNodeExpanding
+    })
+    $TreeView.Add_BeforeCollapse({
         $_.Cancel = $script:CancelNodeExpanding
     })
     
