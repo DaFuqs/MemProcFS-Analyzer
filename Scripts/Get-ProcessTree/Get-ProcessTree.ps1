@@ -668,6 +668,8 @@ function Set-Nodes($Root, $Depth, $Collapsed) {
    $TreeView.EndUpdate()
 }
 
+$script:CancelNodeExpanding = $false
+
 function Fill-GUIData {
     $TreeView.BeginUpdate()
     $TreeView.Nodes.Clear()
@@ -682,9 +684,21 @@ function Fill-GUIData {
             }
         }
     })
+    $TreeView.Add_MouseDown({
+        $script:CancelNodeExpanding = $_.Clicks -gt 1
+    })
+    $TreeView.Add_BeforeExpand({
+        $_.Cancel = $script:CancelNodeExpanding
+    })
     
     $TreeView.Add_NodeMouseDoubleClick({
         if($_.Node.Tag) {
+            if(-not $_.Node.IsExpanded) {
+                $_.Node.Expand()
+            } else {
+                $_.Node.Collapse();
+            }
+
             Show-EntryWindow($_.Node.Tag)
             return $false
         }
