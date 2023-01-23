@@ -7,8 +7,9 @@
 .AUTHOR
 	Dominik Schmidt @ https://github.com/DaFuqs
 .VERSION
-    1.4
+    1.5
 .VERSION_HISTORY
+    1.5: - Load PresentationCore if env does not load it automatically
     1.4: - Nodes to not expand / subtract on double click anymore. This action is already used for opening the properties window
     1.3: - Use a compiled version of DamerauLevenshteinDistance for increased performance
          - Orphaned processes get that listed in the "Suspicious" tag
@@ -144,12 +145,11 @@ Param (
     [switch] $NoSuspiciousChecks
 )
 
-[void][System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms")
-[void][System.Reflection.Assembly]::LoadWithPartialName("System.Drawing")
-[void][System.Reflection.Assembly]::LoadWithPartialName("PresentationFramework")
-[void][System.Reflection.Assembly]::LoadWithPartialName("System.Drawing")
-[void][System.Reflection.Assembly]::LoadWithPartialName("System.Windows")
-
+Add-Type -AssemblyName "System.Windows"
+Add-Type -AssemblyName "System.Windows.Forms"
+Add-Type -AssemblyName "System.Drawing"
+Add-Type -AssemblyName "PresentationFramework"
+Add-Type -AssemblyName "PresentationCore"
 
 # querying the entries of the csv file
 $csvEntries = @(Import-CSV -Path $CSVPath -Delimiter "`t")
@@ -307,7 +307,7 @@ function Show-EntryWindow($entry) {
     # create form for displaying the folder tree
     $entryForm = New-Object System.Windows.Forms.Form
     $entryForm.Text = $entry."Process Name" + ": " + $entry.PID + " - Properties"
-    $entryForm.Size = New-Object System.Drawing.Size(500, 372)
+    $entryForm.Size = New-Object System.Drawing.Size(500, 395)
     $entryForm.Icon = $icon
 
     $alternateCellStyle = New-Object System.Windows.Forms.DataGridViewCellStyle
